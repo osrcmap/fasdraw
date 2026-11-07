@@ -1,0 +1,25 @@
+{
+  "name": "fasdraw",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Keyboard-first C4 diagramming: vim-speed shapes, lines and colors, Structurizr DSL, exports to Excalidraw, SVG, PNG and PDF",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "node --test src/*.test.ts"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/osrcmap/fasdraw"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  }
+}
