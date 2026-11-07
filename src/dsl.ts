@@ -142,8 +142,8 @@ export function parseDsl(src: string, m: Measure): Doc {
 }
 
 // ---------- auto-layout ----------
-// ponytail: layered layout (longest path + one barycenter pass), recursive for boundaries.
-// Good for typical C4 sizes; reach for ELK/dagre if crossings on big models get annoying.
+// Layered layout (longest path + one barycenter pass), recursive for boundaries.
+// Suits typical C4 model sizes; very large models can show edge crossings.
 const PAD = 40, LABEL = 40;
 
 function layout(kids: El[], links: [El, El][], lr: boolean): [number, number] {

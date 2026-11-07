@@ -43,7 +43,7 @@ export const measure: Measure = (s, size, bold) => {
   const k = `${size}${bold ? 'b' : ''}|${s}`;
   let w = widths.get(k);
   if (w === undefined) {
-    if (widths.size > 20000) widths.clear(); // ponytail: crude cap, an LRU if typing-heavy sessions ever thrash it
+    if (widths.size > 20000) widths.clear(); // simple size cap; an LRU would keep hot entries
     mctx ??= document.createElement('canvas').getContext('2d')!;
     mctx.font = font(size, bold);
     widths.set(k, (w = mctx.measureText(s).width));
@@ -90,7 +90,7 @@ export function toSvg(doc: Doc, m: Measure): string {
 // ---------- PNG / PDF ----------
 function rasterize(doc: Doc, m: Measure, scale: number): HTMLCanvasElement {
   const [x, y, w, h] = docBounds(doc, PAD);
-  // ponytail: browsers cap canvas size, so huge diagrams export at reduced resolution (~16 MP); tile if that bites.
+  // Browsers cap canvas size, so very large diagrams export at reduced resolution (~16 MP).
   const s = Math.min(scale, Math.sqrt(16e6 / (w * h)), 16000 / Math.max(w, h));
   const c = document.createElement('canvas');
   c.width = Math.ceil(w * s); c.height = Math.ceil(h * s);
@@ -104,7 +104,7 @@ function rasterize(doc: Doc, m: Measure, scale: number): HTMLCanvasElement {
 export const toPng = (doc: Doc, m: Measure) =>
   new Promise<Blob>((ok, fail) => rasterize(doc, m, 2).toBlob(b => (b ? ok(b) : fail(new Error('PNG encoding failed'))), 'image/png'));
 
-// ponytail: raster PDF (3x, lossless). Vector PDF when someone needs selectable text.
+// Raster PDF (3x, lossless): crisp in print, but text is not selectable.
 export function toPdf(doc: Doc, m: Measure) {
   const [, , w, h] = docBounds(doc, PAD), c = rasterize(doc, m, 3);
   const px = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;

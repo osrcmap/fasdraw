@@ -50,7 +50,7 @@ const corners = (n: Node): Pt[] => [[n.x, n.y], [n.x + n.w, n.y], [n.x, n.y + n.
 const dashOf = (el: Node | Edge) => ('from' in el ? el.dash : nodeDash(el));
 const DIRS: Record<string, Pt> = { h: [-1, 0], j: [0, 1], k: [0, -1], l: [1, 0] };
 
-// ---------- history (ponytail: whole-doc snapshots; patches if docs ever reach MBs) ----------
+// ---------- history: whole-document snapshots ----------
 function commit() {
   const s = JSON.stringify(doc);
   if (s === saved) return;

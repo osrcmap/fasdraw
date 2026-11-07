@@ -1,4 +1,4 @@
-// Run: npm test  (node's built-in runner; node >= 23 strips the types)
+// Run: npm test  (Node's built-in runner; Node >= 22.18 runs TypeScript directly)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { edgeGeom, hitTest, makeEdge, makeNode, parseLabel } from './model.ts';

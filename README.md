@@ -120,12 +120,13 @@ screen exactly.
 | [`src/main.ts`](src/main.ts) | editor state, keymap, input, UI chrome |
 | [`brand/`](brand) | logo SVGs and the script that generates them |
 
-## Roadmap
+## Known limitations
 
-- [x] Core editor, C4 shapes, keyboard flow, exports, Structurizr DSL
-- [ ] Real-time collaboration (CRDT sync, live cursors and selections, self-hostable relay)
-- [ ] Live DSL side panel (edit text, see the diagram update)
-- [ ] Vector PDF, reconnecting edge endpoints, touch pinch-zoom
+- PDF export is a high-resolution image, so its text is not selectable. Use SVG for vector output.
+- A relationship's ends can't be dragged to another node yet: delete it and draw it again.
+- No pinch-zoom on touch screens. Use Ctrl + wheel or the trackpad gesture on desktop.
+- Structurizr DSL import skips deployment views and `!include`, and the DSL itself stores no
+  positions, so imported models are laid out automatically.
 
 ## Contributing
 
