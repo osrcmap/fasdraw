@@ -1,6 +1,9 @@
 <div align="center">
 
-# fasdraw
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/logo-dark.svg">
+  <img src="brand/logo.svg" alt="fasdraw" width="340">
+</picture>
 
 **Architecture diagrams at the speed you think.**
 
@@ -115,6 +118,7 @@ screen exactly.
 | [`src/io.ts`](src/io.ts) | canvas painter, SVG / PNG / PDF / Excalidraw writers, `.fasdraw` parser |
 | [`src/dsl.ts`](src/dsl.ts) | Structurizr DSL parser, auto-layout, exporter |
 | [`src/main.ts`](src/main.ts) | editor state, keymap, input, UI chrome |
+| [`brand/`](brand) | logo SVGs and the script that generates them |
 
 ## Roadmap
 
