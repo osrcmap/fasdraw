@@ -12,7 +12,9 @@ one keystroke away, the way switching from an IDE to Vim feels.
 
 [![MIT license](https://img.shields.io/badge/license-MIT-6965db)](LICENSE)
 ![runtime dependencies: 0](https://img.shields.io/badge/runtime%20deps-0-2f9e44)
-![bundle: 19 kB gzip](https://img.shields.io/badge/bundle-19%20kB%20gzip-438dd5)
+![bundle: 24 kB gzip](https://img.shields.io/badge/bundle-24%20kB%20gzip-438dd5)
+
+**[Try it in your browser at fasdraw.osrcmap.dev](https://fasdraw.osrcmap.dev)**. Nothing to install.
 
 <img src="docs/screenshot.png" alt="fasdraw showing a C4 container diagram of an online shop" width="100%">
 
@@ -31,6 +33,8 @@ hunting through palettes and dragging handles. fasdraw is built around three ide
   the open C4 language, and get a laid-out diagram; export it back for your repo.
 
 ## Quick start
+
+Open **[fasdraw.osrcmap.dev](https://fasdraw.osrcmap.dev)** to try it right away, or run it locally:
 
 ```sh
 git clone https://github.com/osrcmap/fasdraw && cd fasdraw
@@ -57,6 +61,7 @@ Hover the canvas and type. Typing `p` *Customer* `Tab` *Web App [React]* `Tab` *
 | `h` `j` `k` `l` | jump to the nearest node in that direction |
 | `1`–`9` · `0` | color · back to the C4 default |
 | `-` · `e` · `a` | solid/dashed/dotted · straight/elbow/curved · arrowheads. The last style sticks for new lines |
+| `f` | text alignment: left → center → right |
 | `x` | mark as external (C4 gray) |
 | `>` | connect the selected nodes in the order you picked them |
 | `i` / `Enter` · `I` | edit label · label the incoming relationship |
@@ -65,6 +70,10 @@ Hover the canvas and type. Typing `p` *Customer* `Tab` *Web App [React]* `Tab` *
 
 **Labels have a tiny grammar.** `API [Go]` sets name and technology, `Shift+Enter` adds a
 description line, and the C4 caption is rendered for you.
+
+**With the mouse or a touch screen:** drag from the dots around a node to connect it (drop on empty
+space to create the next node), drag either end of a selected line onto another node to reconnect it,
+pinch to zoom and pan with two fingers.
 
 <img src="docs/dark.png" alt="Dark mode with the Space command menu open" width="100%">
 
@@ -89,10 +98,15 @@ workspace {
 
 - **Import:** paste it on the canvas, drop a `.dsl` file, or `Space o`. Elements, nesting
   (systems → containers → components, groups), tags, `shape`/`background` styles,
-  relationship `style`/`routing` and `autolayout` direction are understood. The model is laid out
+  relationship `style`/`routing` and `autolayout` direction are understood. Models are laid out
   automatically.
-- **Export:** `Space e t` writes a valid workspace with views and C4 styles. Layout is not part of
-  the DSL, so keep `.fasdraw` as the lossless format.
+- **Deployment:** deployment environments, deployment nodes, infrastructure nodes and container /
+  system instances are drawn below the model. Instances inherit the relationships of what they deploy.
+- **`!include`:** select or drop the workspace together with the files it includes, and they are
+  stitched in by file name.
+- **Export:** `Space e t` writes a valid workspace with views and C4 styles. Positions travel as
+  workspace properties, so exporting and importing again keeps your layout. Elements you add in
+  text afterwards are laid out under the existing drawing.
 
 A complete example lives in [`examples/shop.dsl`](examples/shop.dsl). It is the diagram in the
 screenshot above.
@@ -104,13 +118,18 @@ screenshot above.
 | `.fasdraw` | native, lossless JSON (`{ type, version, nodes, edges }`), diff-friendly. Open with `Ctrl+O`, drag-and-drop or paste. Work is also autosaved in the browser |
 | `.dsl` | Structurizr DSL import and export |
 | `.excalidraw` | export with native shapes, bound labels and bound arrows |
-| SVG · PNG · PDF | export (`Space e s` / `p` / `d`) |
+| SVG · PNG · PDF | export (`Space e s` / `p` / `d`). PDFs are vector, with selectable text |
 
 ## How it's built
 
 No framework and no runtime dependencies. TypeScript draws straight to a `<canvas>`, with Vite to
-build. One pure display list feeds the canvas, SVG and Excalidraw outputs, so exports match the
-screen exactly.
+build. One pure display list feeds the canvas, SVG, PDF and Excalidraw outputs, so exports match the
+screen.
+
+Rendering is built to stay fast as diagrams grow. Off-screen elements are skipped. Each node's and
+line's display list and parsed paths are cached until that element changes, so panning and zooming
+redraw without recomputing. When zoomed out, labels, arrowheads and dash patterns too small to see
+are not drawn. A 1,500-node diagram pans at 60 fps with everything on screen.
 
 | File | Role |
 | --- | --- |
@@ -122,11 +141,11 @@ screen exactly.
 
 ## Known limitations
 
-- PDF export is a high-resolution image, so its text is not selectable. Use SVG for vector output.
-- A relationship's ends can't be dragged to another node yet: delete it and draw it again.
-- No pinch-zoom on touch screens. Use Ctrl + wheel or the trackpad gesture on desktop.
-- Structurizr DSL import skips deployment views and `!include`, and the DSL itself stores no
-  positions, so imported models are laid out automatically.
+- PDFs use the fonts every PDF reader has built in (Helvetica), so they look slightly different from
+  the screen. Diagrams with text outside Western European scripts export as a high-resolution image PDF
+  instead. Use SVG to keep the exact on-screen fonts.
+- `!include` works with local files opened together. Includes by URL are not fetched.
+- Deployment groups are ignored, so every instance in an environment is connected as its model is.
 
 ## Contributing
 
