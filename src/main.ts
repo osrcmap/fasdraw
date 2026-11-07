@@ -1,6 +1,6 @@
 // fasdraw editor: state, keyboard-first (vim-flavoured) input and the UI chrome around the canvas.
-import { DARK, DASH, HEADS, KINDS, LIGHT, PALETTE, ROUTES, center, docBounds, docPrims, edgeGeom, fitText, hitTest, inRect, isFilled, makeEdge, makeNode, nodeDash, nodePrims, rid, snap } from './model.ts';
-import type { Dash, Doc, Edge, EdgeStyle, Head, Kind, Node, PathPrim, Pt, Route, Theme } from './model.ts';
+import { ALIGNS, DARK, DASH, HEADS, KINDS, LIGHT, PALETTE, ROUTES, center, docBounds, docPrims, edgeGeom, fitText, hitTest, inRect, isFilled, makeEdge, makeNode, nodeAlign, nodeDash, nodePrims, rid, snap } from './model.ts';
+import type { Align, Dash, Doc, Edge, EdgeStyle, Head, Kind, Node, PathPrim, Pt, Route, Theme } from './model.ts';
 import { measure, paint, parseFasdraw, serialize, toExcalidraw, toPdf, toPng, toSvg } from './io.ts';
 import { looksLikeDsl, parseDsl, toDsl } from './dsl.ts';
 
@@ -9,7 +9,8 @@ type Drag =
   | { t: 'move'; start: Pt; orig: [Node, number, number][]; moved: boolean }
   | { t: 'marquee'; start: Pt; base: string[] }
   | { t: 'connect'; from: string; at: Pt }
-  | { t: 'resize'; n: Node; fx: number; fy: number };
+  | { t: 'reconnect'; e: Edge; end: 'from' | 'to'; fixed: Pt }
+  | { t: 'resize'; n: Node; fx: number; fy: number; orig: [number, number, number, number] };
 type Tree = { [key: string]: [string, (() => void) | Tree] };
 type Fn = (key: string, e: KeyboardEvent) => void;
 
@@ -28,6 +29,8 @@ let mouse: Pt = [0, 0], mouseIn = false, hover: string | undefined;
 let tool: Kind | undefined, lastKind: Kind = 'container', lastDir = 'l';
 let mode: 'NORMAL' | 'INSERT' | 'LEADER' = 'NORMAL', leader = '', editing: string | undefined;
 let drag: Drag | undefined, spaceDown = false, spacePanned = false;
+const touches = new Map<number, Pt>(); // active pointers (screen px), for pinch-zoom
+let pinch: { d: number; at: Pt; z: number } | undefined; // finger distance, world point under the midpoint, zoom
 let dark = false, theme: Theme = LIGHT, accent = '#6965db', raf = 0, toastTimer = 0;
 let past: string[] = [], future: string[] = [], saved = JSON.stringify(doc);
 
@@ -88,7 +91,7 @@ function render() {
   ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.setTransform(dpr * view.z, 0, 0, dpr * view.z, dpr * view.x, dpr * view.y);
   const [vx, vy] = toWorld(0, 0);
-  paint(ctx, docPrims(doc, theme, measure, [vx, vy, W / view.z, H / view.z]));
+  paint(ctx, docPrims(doc, theme, measure, [vx, vy, W / view.z, H / view.z]), 3 / view.z); // labels under 3px are skipped
   overlay();
   const g = 20 * view.z; // dot grid is a CSS background: free to pan and zoom
   cv.style.backgroundImage = g < 8 ? 'none' : '';
@@ -113,11 +116,16 @@ function overlay() {
     ctx.fillRect(x - 4 * px, y - 4 * px, 8 * px, 8 * px);
     ctx.strokeRect(x - 4 * px, y - 4 * px, 8 * px, 8 * px);
   }
-  if (drag?.t === 'connect') {
+  const se = sel.length === 1 && !drag ? edgeOf(sel[0]) : undefined, sg = se && geomOf(se);
+  if (sg) for (const q of [sg.pts[0], sg.pts[sg.pts.length - 1]]) {
+    ctx.beginPath(); ctx.arc(q[0], q[1], 5 * px, 0, Math.PI * 2);
+    ctx.fillStyle = theme.bg; ctx.fill(); ctx.stroke();
+  }
+  if (drag?.t === 'connect' || drag?.t === 'reconnect') {
     ctx.setLineDash([6 * px, 4 * px]);
-    ctx.beginPath(); ctx.moveTo(...drag.at); ctx.lineTo(...mouse); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(...(drag.t === 'connect' ? drag.at : drag.fixed)); ctx.lineTo(...mouse); ctx.stroke();
     ctx.setLineDash([]);
-    if (h && h.id !== drag.from) box(h);
+    if (h && h.id !== (drag.t === 'connect' ? drag.from : undefined)) box(h);
   } else if (!drag) {
     const target = h ?? one;
     if (target) for (const q of ports(target)) {
@@ -147,6 +155,7 @@ const DASH_NAMES = ['solid', 'dashed', 'dotted'];
 const HEAD_GLYPH: Record<Head, string> = { end: '→', both: '↔', none: '—' };
 const icon = (d: string, extra = '') => `<svg viewBox="0 0 28 12"><path d="${d}"${extra}/></svg>`;
 const ROUTE_D: Record<Route, string> = { straight: 'M3 10L25 2', elbow: 'M3 10H14V2H25', curve: 'M3 10C15 10 13 2 25 2' };
+const ALIGN_D: Record<Align, string> = { left: 'M3 2H25M3 6H17M3 10H21', center: 'M3 2H25M8 6H20M5 10H23', right: 'M3 2H25M11 6H25M7 10H25' };
 const HEAD_D: Record<Head, string> = { end: 'M3 6H24M19 2L24 6L19 10', both: 'M4 6H24M9 2L4 6L9 10M19 2L24 6L19 10', none: 'M3 6H25' };
 
 function ui() {
@@ -177,6 +186,7 @@ function renderProps() {
     + `<button class="sw auto${first.color ? '' : ' on'}" data-act="color" data-v="0" title="0 · default for the kind"></button></div>`
     + seg<Dash>('Stroke', '-', 'dash', [0, 1, 2], dashOf(first), v => icon('M3 6H25', v ? ` stroke-dasharray="${DASH[v]}"` : ''))
     + (es.length ? seg('Route', 'e', 'route', ROUTES, es[0].route, v => icon(ROUTE_D[v])) + seg('Arrows', 'a', 'head', HEADS, es[0].head, v => icon(HEAD_D[v])) : '')
+    + (ns.length ? seg('Text', 'f', 'align', ALIGNS, nodeAlign(ns[0]), v => icon(ALIGN_D[v])) : '')
     + (ns.some(n => isFilled(n.kind)) ? `<h4>External<kbd>x</kbd></h4><div class="row"><button class="opt wide${ns[0].ext ? ' on' : ''}" data-act="ext">${ns[0].ext ? 'External system' : 'Internal'}</button></div>` : '')
     + `<h4>Actions</h4><div class="row"><button class="opt wide" data-act="del">Delete<kbd>Del</kbd></button></div>`);
 }
@@ -354,6 +364,13 @@ function setHead(v?: Head) {
   for (const e of es) e.head = style.head;
   commit();
 }
+function setAlign(v?: Align) {
+  const ns = selNodes();
+  if (!ns.length) return;
+  const next = v ?? ALIGNS[(ALIGNS.indexOf(nodeAlign(ns[0])) + 1) % ALIGNS.length];
+  for (const n of ns) n.align = next;
+  commit();
+}
 function toggleExt() {
   const ns = selNodes();
   if (!ns.length) return;
@@ -431,11 +448,28 @@ function insert(part: Doc, at?: Pt) {
   sel = [...nodes, ...edges].map(x => x.id);
   commit();
 }
-function load(text: string, name: string) {
+// Structurizr DSL; `!include` resolves against files opened together (matched by file name).
+function readDsl(text: string, files?: Map<string, string>) {
+  const missing: string[] = [];
+  const model = parseDsl(text, measure, path => {
+    const t = files?.get(path.split(/[\\/]/).pop() ?? '');
+    if (t === undefined) missing.push(path);
+    return t;
+  });
+  return { model, missing };
+}
+const missingNote = (missing: string[]) => missing.length ? ` Not found: ${missing.join(', ')}. Open included files together with it.` : '';
+async function openFiles(list: Iterable<File>) {
+  const files = [...list], texts = new Map<string, string>();
+  for (const f of files) texts.set(f.name, await f.text());
+  const main = files.find(f => /^\s*workspace\b/m.test(texts.get(f.name)!)) ?? files[0];
+  if (main) load(texts.get(main.name)!, main.name, texts);
+}
+function load(text: string, name: string, files?: Map<string, string>) {
   try {
-    const d = /^\s*\{/.test(text) ? parseFasdraw(text) : parseDsl(text, measure); // JSON, else Structurizr DSL
+    const { model: d, missing } = /^\s*\{/.test(text) ? { model: parseFasdraw(text), missing: [] } : readDsl(text, files);
     if (!d.nodes.length) throw new Error('no diagram elements found');
-    doc = d; sel = []; commit(); fit(); toast(`Opened ${name}`);
+    doc = d; sel = []; commit(); fit(); toast(`Opened ${name}.${missingNote(missing)}`);
   }
   catch (err) { toast(`Can't open ${name}: ${(err as Error).message}`); }
   draw();
@@ -480,6 +514,7 @@ bind('0', 'Default color for the kind', () => setColor(0));
 bind('-', 'Stroke: solid → dashed → dotted', () => setDash());
 bind('e', 'Route: straight → elbow → curve', () => setRoute());
 bind('a', 'Arrows: end → both → none', () => setHead());
+bind('f', 'Text: left → center → right', () => setAlign());
 bind('x', 'Toggle external (C4 gray)', toggleExt);
 section('Edit & view');
 bind('ArrowLeft ArrowRight ArrowUp ArrowDown', 'Nudge (Shift: ×5)', (k, e) => nudge(k, e.shiftKey), '← → ↑ ↓');
@@ -515,8 +550,8 @@ function toggleHelp() {
     + HELP.map(([k, d]) => (k ? `<div class="kv"><span>${d}</span><span>${k.split(' ').map(x => `<kbd>${x}</kbd>`).join('')}</span></div>` : `<h3>${d}</h3>`)).join('')
     + `<h3>Commands</h3>${commandRows(LEADER)}`
     + '<h3>Labels</h3><p>First line is the name. <code>Name [tech]</code> or a <code>[tech]</code> line sets the technology; more lines (<kbd>⇧</kbd><kbd>Enter</kbd>) are the description.</p>'
-    + '<h3>Mouse</h3><p>Drag from the dots around a node to connect it; drop on empty space to create a connected node. Double-click to add or edit. Wheel pans, Ctrl+wheel zooms.</p>'
-    + '<h3>Diagrams as code</h3><p>Paste or open Structurizr DSL (the open C4 language) to drop in a whole model, laid out for you. <kbd>Space</kbd><kbd>e</kbd><kbd>t</kbd> exports it back.</p></div>');
+    + '<h3>Mouse</h3><p>Drag from the dots around a node to connect it; drop on empty space to create a connected node. Drag a selected line\'s end onto another node to reconnect it. Double-click to add or edit. Wheel pans, Ctrl+wheel or pinch zooms, two fingers pan.</p>'
+    + '<h3>Diagrams as code</h3><p>Paste or open Structurizr DSL (the open C4 language) to drop in a whole model, laid out for you. Open the files a workspace <code>!include</code>s together with it. <kbd>Space</kbd><kbd>e</kbd><kbd>t</kbd> exports it back, layout included.</p></div>');
 }
 
 function modKey(e: KeyboardEvent) {
@@ -588,6 +623,14 @@ cv.addEventListener('pointerdown', e => {
   const p = toWorld(e.clientX, e.clientY);
   mouse = p;
   cv.setPointerCapture(e.pointerId);
+  touches.set(e.pointerId, [e.clientX, e.clientY]);
+  if (touches.size === 2) { // second finger: drop whatever the first started and pinch instead
+    cancelDrag();
+    const [a, b] = [...touches.values()];
+    pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, at: toWorld((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), z: view.z };
+    return draw();
+  }
+  if (touches.size > 2) return;
   if (e.button === 1 || (e.button === 0 && spaceDown)) {
     drag = { t: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
     spacePanned = true;
@@ -595,11 +638,16 @@ cv.addEventListener('pointerdown', e => {
   }
   if (e.button !== 0) return;
   if (tool) { create(tool, p); tool = undefined; return; }
+  const se = sel.length === 1 ? edgeOf(sel[0]) : undefined, sg = se && geomOf(se);
+  if (se && sg) {
+    const a = sg.pts[0], b = sg.pts[sg.pts.length - 1], end = near(a, p, 10) ? 'from' : near(b, p, 10) ? 'to' : undefined;
+    if (end) { drag = { t: 'reconnect', e: se, end, fixed: end === 'from' ? b : a }; return draw(); }
+  }
   const one = sel.length === 1 ? nodeOf(sel[0]) : undefined, h = nodeOf(hover) ?? one;
   const port = h && ports(h).find(q => near(q, p, 10));
   if (h && port) { drag = { t: 'connect', from: h.id, at: port }; return draw(); }
   const ci = one ? corners(one).findIndex(q => near(q, p, 10)) : -1;
-  if (one && ci >= 0) { const [fx, fy] = corners(one)[3 - ci]; drag = { t: 'resize', n: one, fx, fy }; return draw(); }
+  if (one && ci >= 0) { const [fx, fy] = corners(one)[3 - ci]; drag = { t: 'resize', n: one, fx, fy, orig: [one.x, one.y, one.w, one.h] }; return draw(); }
   const hit = hitTest(doc, p, 5 / view.z);
   if (hit) {
     if (e.shiftKey) sel = sel.includes(hit) ? sel.filter(s => s !== hit) : [...sel, hit];
@@ -613,6 +661,14 @@ cv.addEventListener('pointerdown', e => {
 });
 
 cv.addEventListener('pointermove', e => {
+  if (touches.has(e.pointerId)) touches.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pinch) { // zoom by finger spread, keeping the world point under the fingers in place
+    const [a, b] = [...touches.values()], z = Math.min(4, Math.max(0.1, (pinch.z * Math.hypot(a[0] - b[0], a[1] - b[1])) / pinch.d));
+    view.z = z;
+    view.x = (a[0] + b[0]) / 2 - pinch.at[0] * z;
+    view.y = (a[1] + b[1]) / 2 - pinch.at[1] * z;
+    return draw();
+  }
   const p = toWorld(e.clientX, e.clientY), d = drag;
   mouse = p; mouseIn = true;
   if (!d) {
@@ -621,7 +677,9 @@ cv.addEventListener('pointermove', e => {
     hover = hitTest(doc, p, 4 / view.z, true) ?? (band ? keep.id : undefined);
     const one = sel.length === 1 ? nodeOf(sel[0]) : undefined, h = nodeOf(hover) ?? one;
     const ci = one ? corners(one).findIndex(q => near(q, p, 10)) : -1;
-    cv.style.cursor = tool || (h && ports(h).some(q => near(q, p, 10))) ? 'crosshair'
+    const se = sel.length === 1 ? edgeOf(sel[0]) : undefined, sg = se && geomOf(se);
+    const onEnd = !!sg && (near(sg.pts[0], p, 10) || near(sg.pts[sg.pts.length - 1], p, 10));
+    cv.style.cursor = tool || onEnd || (h && ports(h).some(q => near(q, p, 10))) ? 'crosshair'
       : ci >= 0 ? (ci === 0 || ci === 3 ? 'nwse-resize' : 'nesw-resize')
       : hitTest(doc, p, 5 / view.z) ? 'move' : 'default';
   } else if (d.t === 'pan') {
@@ -639,16 +697,28 @@ cv.addEventListener('pointermove', e => {
     const x = snap(p[0]), y = snap(p[1]), n = d.n;
     n.w = Math.max(40, Math.abs(x - d.fx)); n.h = Math.max(30, Math.abs(y - d.fy));
     n.x = x < d.fx ? d.fx - n.w : d.fx; n.y = y < d.fy ? d.fy - n.h : d.fy;
-  } else if (d.t === 'connect') {
+  } else if (d.t === 'connect' || d.t === 'reconnect') {
     hover = hitTest(doc, p, 4 / view.z, true);
   }
   draw();
 });
 
-cv.addEventListener('pointerup', () => {
+function cancelDrag() {
   const d = drag;
   drag = undefined;
-  if (d?.t === 'connect') {
+  if (d?.t === 'move') for (const [n, x, y] of d.orig) { n.x = x; n.y = y; }
+  else if (d?.t === 'marquee') sel = d.base;
+  else if (d?.t === 'resize') [d.n.x, d.n.y, d.n.w, d.n.h] = d.orig;
+}
+const lift = (e: PointerEvent) => { touches.delete(e.pointerId); if (touches.size < 2) pinch = undefined; };
+cv.addEventListener('pointerup', e => {
+  lift(e);
+  const d = drag;
+  drag = undefined;
+  if (d?.t === 'reconnect') {
+    const to = nodeOf(hover), other = d.end === 'from' ? d.e.to : d.e.from;
+    if (to && to.id !== other) { d.e[d.end] = to.id; commit(); }
+  } else if (d?.t === 'connect') {
     const to = nodeOf(hover), src = nodeOf(d.from);
     if (to && src && to !== src) {
       const dup = doc.edges.find(e => e.from === src.id && e.to === to.id);
@@ -665,7 +735,7 @@ cv.addEventListener('pointerup', () => {
   } else if (d?.t === 'resize' || (d?.t === 'move' && d.moved)) commit();
   draw();
 });
-cv.addEventListener('pointercancel', () => { drag = undefined; draw(); });
+cv.addEventListener('pointercancel', e => { lift(e); cancelDrag(); draw(); });
 cv.addEventListener('pointerleave', () => { mouseIn = false; if (!drag) hover = undefined; draw(); });
 
 cv.addEventListener('dblclick', e => {
@@ -701,8 +771,8 @@ addEventListener('paste', e => {
   const at = mouseIn ? mouse : screenCenter();
   try { insert(parseFasdraw(t), at); }
   catch {
-    const model = looksLikeDsl(t) ? parseDsl(t, measure) : undefined;
-    if (model?.nodes.length) { insert(model, at); return draw(); }
+    const { model, missing } = looksLikeDsl(t) ? readDsl(t) : { model: undefined, missing: [] };
+    if (model?.nodes.length) { insert(model, at); if (missing.length) toast(missingNote(missing).trim()); return draw(); }
     if (!t.trim()) return;
     const n = makeNode('text', ...at, t.trim());
     fitText(n, measure);
@@ -715,12 +785,10 @@ addEventListener('paste', e => {
 addEventListener('dragover', e => e.preventDefault());
 addEventListener('drop', async e => {
   e.preventDefault();
-  const f = e.dataTransfer?.files[0];
-  if (f) load(await f.text(), f.name);
+  if (e.dataTransfer?.files.length) await openFiles(e.dataTransfer.files);
 });
 fileInput.addEventListener('change', async () => {
-  const f = fileInput.files?.[0];
-  if (f) load(await f.text(), f.name);
+  if (fileInput.files?.length) await openFiles(fileInput.files);
   fileInput.value = '';
 });
 
@@ -737,7 +805,7 @@ props.addEventListener('click', e => {
   const b = (e.target as Element).closest<HTMLElement>('[data-act]');
   if (!b) return;
   const v = b.dataset.v ?? '';
-  ({ color: () => setColor(+v), dash: () => setDash(+v as Dash), route: () => setRoute(v as Route), head: () => setHead(v as Head), ext: toggleExt, del: remove } as Record<string, () => void>)[b.dataset.act!]?.();
+  ({ color: () => setColor(+v), dash: () => setDash(+v as Dash), route: () => setRoute(v as Route), head: () => setHead(v as Head), align: () => setAlign(v as Align), ext: toggleExt, del: remove } as Record<string, () => void>)[b.dataset.act!]?.();
   draw();
 });
 menu.innerHTML = commandRows(LEADER);

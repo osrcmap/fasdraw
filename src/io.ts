@@ -1,6 +1,6 @@
 // Renderers and file formats: canvas painter, SVG, PNG, PDF, Excalidraw and the native .fasdraw JSON.
-import { DASH, FONT, HEADS, KINDS, LIGHT, ROUTES, cylR, docBounds, docPrims, edgeGeom, font, headR, isFilled, labelBox, labelParts, mix, nodeColor, nodeDash, parseLabel, r1, rid, textOn, tubeR, wrap } from './model.ts';
-import type { Dash, Doc, Edge, Kind, Measure, Node, Prim } from './model.ts';
+import { ALIGNS, DASH, FONT, HEADS, KINDS, LIGHT, ROUTES, cylR, docBounds, docPrims, edgeGeom, font, headR, isFilled, labelBox, labelParts, mix, nodeAlign, nodeColor, nodeDash, parseLabel, r1, rid, textOn, tubeR, wrap } from './model.ts';
+import type { Dash, Doc, Edge, Kind, Measure, Node, PathPrim, Prim } from './model.ts';
 
 const PAD = 32;
 
@@ -24,6 +24,7 @@ export function parseFasdraw(text: string): Doc {
       id: n.id, kind, x: num(n.x, 0), y: num(n.y, 0),
       w: Math.max(10, num(n.w, KINDS[kind].w)), h: Math.max(10, num(n.h, KINDS[kind].h)),
       text: str(n.text), color: color(n.color), dash: dash(n.dash), ext: n.ext === true || undefined,
+      align: ALIGNS.includes(n.align) ? n.align : undefined,
     });
   }
   for (const e of j.edges) {
@@ -51,20 +52,28 @@ export const measure: Measure = (s, size, bold) => {
   return w;
 };
 
-export function paint(g: CanvasRenderingContext2D, prims: Prim[]) {
+// Parsed paths live as long as their (memoized) prims, so a pan or zoom parses nothing.
+const paths = new WeakMap<PathPrim, Path2D>();
+// `minText` (world units): skip text and decorations smaller than this; on screen that is ~3px, so nothing
+// readable is lost, and tiny labels and arrowheads are most of the cost of a zoomed-out view.
+export function paint(g: CanvasRenderingContext2D, prims: Prim[], minText = 0) {
   g.lineJoin = 'round';
   for (const p of prims) {
     if ('d' in p) {
-      const path = new Path2D(p.d);
+      if ((p.detail ?? Infinity) < minText) continue;
+      let path = paths.get(p);
+      if (!path) paths.set(p, (path = new Path2D(p.d)));
       if (p.fill) { g.fillStyle = p.fill; g.fill(path); }
       if (p.stroke) {
         g.strokeStyle = p.stroke; g.lineWidth = p.sw ?? 1.5;
-        g.setLineDash(DASH[p.dash ?? 0]); g.lineCap = p.dash === 2 ? 'round' : 'butt';
+        // A dash pattern shorter than the skip size can't be seen; drawing it solid is far cheaper.
+        const dash = DASH[p.dash ?? 0], solid = dash[0] + dash[1] < minText;
+        g.setLineDash(solid ? [] : dash); g.lineCap = p.dash === 2 && !solid ? 'round' : 'butt';
         g.stroke(path);
       }
-    } else {
+    } else if (p.size >= minText) {
       g.font = font(p.size, p.bold); g.fillStyle = p.color;
-      g.textAlign = p.anchor === 'start' ? 'left' : 'center';
+      g.textAlign = p.anchor === 'start' ? 'left' : p.anchor === 'end' ? 'right' : 'center';
       g.fillText(p.text, p.x, p.y);
     }
   }
@@ -82,7 +91,7 @@ export function toSvg(doc: Doc, m: Measure): string {
   const body = docPrims(doc, LIGHT, m).map(p =>
     'd' in p
       ? `<path d="${p.d}" ${p.fill ? paintAttr('fill', p.fill) : 'fill="none"'}${p.stroke ? ` ${paintAttr('stroke', p.stroke)} stroke-width="${p.sw ?? 1.5}" stroke-linejoin="round"${p.dash ? ` stroke-dasharray="${DASH[p.dash]}"${p.dash === 2 ? ' stroke-linecap="round"' : ''}` : ''}` : ''}/>`
-      : `<text x="${r1(p.x)}" y="${r1(p.y)}" font-size="${p.size}"${p.bold ? ' font-weight="600"' : ''} ${paintAttr('fill', p.color)}${p.anchor === 'middle' ? ' text-anchor="middle"' : ''}>${esc(p.text)}</text>`,
+      : `<text x="${r1(p.x)}" y="${r1(p.y)}" font-size="${p.size}"${p.bold ? ' font-weight="600"' : ''} ${paintAttr('fill', p.color)}${p.anchor === 'start' ? '' : ` text-anchor="${p.anchor}"`}>${esc(p.text)}</text>`,
   );
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="${x} ${y} ${w} ${h}" font-family='${FONT}'>\n<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#ffffff"/>\n${body.join('\n')}\n</svg>\n`;
 }
@@ -104,18 +113,13 @@ function rasterize(doc: Doc, m: Measure, scale: number): HTMLCanvasElement {
 export const toPng = (doc: Doc, m: Measure) =>
   new Promise<Blob>((ok, fail) => rasterize(doc, m, 2).toBlob(b => (b ? ok(b) : fail(new Error('PNG encoding failed'))), 'image/png'));
 
-// Raster PDF (3x, lossless): crisp in print, but text is not selectable.
-export function toPdf(doc: Doc, m: Measure) {
-  const [, , w, h] = docBounds(doc, PAD), c = rasterize(doc, m, 3);
-  const px = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
-  const rgb = new Uint8Array(c.width * c.height * 3);
-  for (let i = 0, j = 0; i < px.length; i += 4) { rgb[j++] = px[i]; rgb[j++] = px[i + 1]; rgb[j++] = px[i + 2]; }
-  return pdfFromRgb(rgb, c.width, c.height, r1(w * 0.75), r1(h * 0.75));
-}
+// ---------- PDF ----------
+const deflate = async (b: Uint8Array<ArrayBuffer>) =>
+  new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+const r2 = (v: number) => Math.round(v * 100) / 100;
 
-// Minimal single-page PDF: one Flate-compressed RGB image scaled to the page (px -> pt).
-export async function pdfFromRgb(rgb: Uint8Array<ArrayBuffer>, W: number, H: number, wPt: number, hPt: number): Promise<Blob> {
-  const z = new Uint8Array(await new Response(new Blob([rgb]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+// Minimal single-page PDF: catalog, pages, page, a Flate-compressed content stream and an optional RGB image.
+async function writePdf(wPt: number, hPt: number, resources: string, content: string, image?: { W: number; H: number; rgb: Uint8Array<ArrayBuffer> }): Promise<Blob> {
   const parts: BlobPart[] = [], offs: number[] = [];
   let len = 0;
   const put = (p: string | Uint8Array<ArrayBuffer>) => { parts.push(p); len += p.length; }; // strings are ASCII, so length == bytes
@@ -125,17 +129,114 @@ export async function pdfFromRgb(rgb: Uint8Array<ArrayBuffer>, W: number, H: num
     if (stream) { put('stream\n'); put(stream); put('\nendstream\n'); }
     put('endobj\n');
   };
-  const draw = new TextEncoder().encode(`q ${wPt} 0 0 ${hPt} 0 0 cm /I Do Q`);
+  const body = await deflate(new TextEncoder().encode(content)); // content is ASCII: text bytes are octal-escaped
   put('%PDF-1.4\n');
   obj('<< /Type /Catalog /Pages 2 0 R >>');
   obj('<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
-  obj(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wPt} ${hPt}] /Resources << /XObject << /I 4 0 R >> >> /Contents 5 0 R >>`);
-  obj(`<< /Type /XObject /Subtype /Image /Width ${W} /Height ${H} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length ${z.length} >>`, z);
-  obj(`<< /Length ${draw.length} >>`, draw);
+  obj(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wPt} ${hPt}] /Resources << ${resources} >> /Contents 4 0 R >>`);
+  obj(`<< /Length ${body.length} /Filter /FlateDecode >>`, body);
+  if (image) {
+    const z = await deflate(image.rgb);
+    obj(`<< /Type /XObject /Subtype /Image /Width ${image.W} /Height ${image.H} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length ${z.length} >>`, z);
+  }
   const xref = len;
   put(`xref\n0 ${offs.length + 1}\n0000000000 65535 f \n${offs.map(o => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`);
   put(`trailer\n<< /Size ${offs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
   return new Blob(parts, { type: 'application/pdf' });
+}
+
+export const pdfFromRgb = (rgb: Uint8Array<ArrayBuffer>, W: number, H: number, wPt: number, hPt: number) =>
+  writePdf(wPt, hPt, '/XObject << /I 5 0 R >>', `q ${wPt} 0 0 ${hPt} 0 0 cm /I Do Q`, { W, H, rgb });
+
+// Vector PDF straight from the display list, using the PDF base fonts (nothing embedded, a few KB).
+// Labels with characters outside WinAnsi (Western European) fall back to a 3x raster page.
+export const toPdf = async (doc: Doc, m: Measure) => (await vectorPdf(doc)) ?? rasterPdf(doc, m);
+
+function rasterPdf(doc: Doc, m: Measure) {
+  const [, , w, h] = docBounds(doc, PAD), c = rasterize(doc, m, 3);
+  const px = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+  const rgb = new Uint8Array(c.width * c.height * 3);
+  for (let i = 0, j = 0; i < px.length; i += 4) { rgb[j++] = px[i]; rgb[j++] = px[i + 1]; rgb[j++] = px[i + 2]; }
+  return pdfFromRgb(rgb, c.width, c.height, r1(w * 0.75), r1(h * 0.75));
+}
+
+// Advance widths (1/1000 em) of Helvetica and Helvetica-Bold for ASCII 32–126, from the Adobe AFM files.
+const HELV = [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, ...Array(10).fill(556), 278, 278, 584, 584, 584, 556,
+  1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611,
+  278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556,
+  500, 722, 500, 500, 500, 334, 260, 334, 584];
+const HELV_BOLD = [278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278, ...Array(10).fill(556), 333, 333, 584, 584, 584, 611,
+  975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611,
+  333, 278, 333, 584, 556, 333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611,
+  556, 778, 556, 556, 500, 389, 280, 389, 584];
+// Accented letters measure as their base letter; anything else as a digit.
+export const helvetica: Measure = (s, size, bold) => {
+  const t = bold ? HELV_BOLD : HELV;
+  let w = 0;
+  for (const ch of s) { const c = ch.normalize('NFD').charCodeAt(0); w += c >= 32 && c < 127 ? t[c - 32] : 556; }
+  return (w * size) / 1000;
+};
+// WinAnsiEncoding: Latin-1 plus the typographic punctuation Windows-1252 puts in 0x80–0x9f.
+const WIN: Record<string, number | undefined> = {
+  '€': 0x80, '‚': 0x82, 'ƒ': 0x83, '„': 0x84, '…': 0x85, '†': 0x86, '‡': 0x87, 'ˆ': 0x88, '‰': 0x89, 'Š': 0x8a, '‹': 0x8b, 'Œ': 0x8c,
+  'Ž': 0x8e, '‘': 0x91, '’': 0x92, '“': 0x93, '”': 0x94, '•': 0x95, '–': 0x96, '—': 0x97, '˜': 0x98, '™': 0x99, 'š': 0x9a, '›': 0x9b,
+  'œ': 0x9c, 'ž': 0x9e, 'Ÿ': 0x9f,
+};
+const winAnsi = (ch: string) => { const c = ch.charCodeAt(0); return ch.length === 1 && ((c >= 32 && c < 127) || (c >= 160 && c <= 255)) ? c : WIN[ch]; };
+const pdfText = (s: string) => [...s].map(ch => {
+  const c = winAnsi(ch)!;
+  return c === 40 || c === 41 || c === 92 ? '\\' + ch : c > 126 ? '\\' + c.toString(8).padStart(3, '0') : ch;
+}).join('');
+
+// Our path strings only use M L H V Q C Z (see model.ts); quadratics become cubics.
+function pdfPath(d: string): string {
+  const t = d.match(/[MLHVQCZ]|-?\d*\.?\d+(?:e-?\d+)?/g) ?? [];
+  let i = 0, x = 0, y = 0, sx = 0, sy = 0, out = '';
+  const n = () => Number(t[i++]);
+  while (i < t.length) {
+    const c = t[i++];
+    if (c === 'M') { x = sx = n(); y = sy = n(); out += `${x} ${y} m `; }
+    else if (c === 'L') { x = n(); y = n(); out += `${x} ${y} l `; }
+    else if (c === 'H') { x = n(); out += `${x} ${y} l `; }
+    else if (c === 'V') { y = n(); out += `${x} ${y} l `; }
+    else if (c === 'C') { const v = [n(), n(), n(), n(), n(), n()]; out += `${v.join(' ')} c `; x = v[4]; y = v[5]; }
+    else if (c === 'Q') {
+      const qx = n(), qy = n(), ex = n(), ey = n();
+      out += `${r2(x + (2 / 3) * (qx - x))} ${r2(y + (2 / 3) * (qy - y))} ${r2(ex + (2 / 3) * (qx - ex))} ${r2(ey + (2 / 3) * (qy - ey))} ${ex} ${ey} c `;
+      x = ex; y = ey;
+    } else if (c === 'Z') { out += 'h '; x = sx; y = sy; }
+  }
+  return out;
+}
+
+export async function vectorPdf(doc: Doc): Promise<Blob | undefined> {
+  const prims = docPrims(doc, LIGHT, helvetica); // wrap with the PDF font's metrics so lines fit their boxes
+  if (prims.some(p => 'text' in p && [...p.text].some(ch => winAnsi(ch) === undefined))) return undefined;
+  const [x0, y0, w, h] = docBounds(doc, PAD), k = 0.75, states = new Map<string, string>();
+  const rgb = (c: string) => [1, 3, 5].map(i => r2(parseInt(c.slice(i, i + 2), 16) / 255)).join(' ');
+  const alpha = (c?: string) => (c?.length === 9 ? r2(parseInt(c.slice(7), 16) / 255) : 1);
+  const gs = (fill?: string, stroke?: string) => {
+    const key = `${alpha(fill)} ${alpha(stroke)}`;
+    if (!states.has(key)) states.set(key, `G${states.size}`);
+    return `/${states.get(key)} gs `;
+  };
+  // px -> pt, and flip y so the display list's coordinates are used as-is (text flips back via Tm).
+  let out = `${k} 0 0 ${-k} ${r2(-x0 * k)} ${r2((y0 + h) * k)} cm 1 1 1 rg ${x0} ${y0} ${w} ${h} re f 1 j\n`;
+  for (const p of prims) {
+    if ('d' in p) {
+      out += gs(p.fill, p.stroke);
+      if (p.fill) out += `${rgb(p.fill)} rg `;
+      if (p.stroke) out += `${rgb(p.stroke)} RG ${p.sw ?? 1.5} w [${DASH[p.dash ?? 0].join(' ')}] 0 d ${p.dash === 2 ? 1 : 0} J `;
+      out += pdfPath(p.d) + (p.fill && p.stroke ? 'B' : p.fill ? 'f' : 'S') + '\n';
+    } else {
+      const tw = helvetica(p.text, p.size, p.bold), tx = p.anchor === 'middle' ? p.x - tw / 2 : p.anchor === 'end' ? p.x - tw : p.x;
+      out += `${gs(p.color)}${rgb(p.color)} rg BT /F${p.bold ? 2 : 1} ${p.size} Tf 1 0 0 -1 ${r2(tx)} ${r2(p.y)} Tm (${pdfText(p.text)}) Tj ET\n`;
+    }
+  }
+  const font = (name: string) => `<< /Type /Font /Subtype /Type1 /BaseFont /${name} /Encoding /WinAnsiEncoding >>`;
+  const resources = `/Font << /F1 ${font('Helvetica')} /F2 ${font('Helvetica-Bold')} >> /ExtGState << `
+    + [...states].map(([key, name]) => { const [ca, CA] = key.split(' '); return `/${name} << /ca ${ca} /CA ${CA} >>`; }).join(' ') + ' >>';
+  return writePdf(r2(w * k), r2(h * k), resources, out);
 }
 
 // ---------- Excalidraw ----------
@@ -170,10 +271,12 @@ export function toExcalidraw(doc: Doc, m: Measure) {
       verticalAlign: 'middle', containerId: null, lineHeight: 1.25, autoResize: true, ...o,
     });
   };
-  const bindText = (c: El, s: string, color: string, [cx, cy]: [number, number], max: number) => {
+  // Place text of width w inside [x, x + span] according to the alignment.
+  const alignX = (al: string, x: number, span: number, w: number, pad: number) => al === 'left' ? x + pad : al === 'right' ? x + span - pad - w : x + (span - w) / 2;
+  const bindText = (c: El, s: string, color: string, [bx, by, bw, bh]: number[], align = 'center') => {
     if (!s) return;
-    const wrapped = wrap(s, max, 16, false, m).join('\n');
-    const t = text(wrapped, color, (w, h) => [cx - w / 2, cy - h / 2], { containerId: c.id, originalText: s });
+    const wrapped = wrap(s, bw - 20, 16, false, m).join('\n');
+    const t = text(wrapped, color, (w, h) => [alignX(align, bx, bw, w, 10), by + (bh - h) / 2], { containerId: c.id, originalText: s, textAlign: align });
     c.boundElements.push({ type: 'text', id: t.id });
   };
 
@@ -216,18 +319,17 @@ export function toExcalidraw(doc: Doc, m: Measure) {
         break;
       case 'ellipse': hub = el('ellipse', x, y, w, h, st); break;
       case 'text':
-        hub = text(wrap(n.text || ' ', w, 16, false, m).join('\n'), c, () => [x, y], { textAlign: 'left', verticalAlign: 'top', originalText: n.text });
+        hub = text(wrap(n.text || ' ', w, 16, false, m).join('\n'), c, tw => [alignX(nodeAlign(n), x, w, tw, 0), y], { textAlign: nodeAlign(n), verticalAlign: 'top', originalText: n.text });
         break;
       case 'boundary':
         hub = el('rectangle', x, y, w, h, { ...g, ...round });
-        if (label) text(label, c, (_, th) => [x + 12, y + h - 10 - th], { textAlign: 'left', groupIds: [n.id] });
+        if (label) text(label, c, (tw, th) => [alignX(nodeAlign(n), x, w, tw, 12), y + h - 10 - th], { textAlign: nodeAlign(n), groupIds: [n.id] });
         break;
       default: hub = el('rectangle', x, y, w, h, { ...st, ...round });
     }
     hubs.set(n.id, hub);
     if (n.kind !== 'text' && n.kind !== 'boundary') {
-      const [bx, by, bw, bh] = labelBox(n);
-      bindText(hub, label, solid ? textOn(c) : LIGHT.fg, [bx + bw / 2, by + bh / 2], bw - 20);
+      bindText(hub, label, solid ? textOn(c) : LIGHT.fg, labelBox(n), nodeAlign(n));
     }
   }
 
@@ -248,7 +350,7 @@ export function toExcalidraw(doc: Doc, m: Measure) {
     ha.boundElements.push({ type: 'arrow', id: arrow.id });
     hb.boundElements.push({ type: 'arrow', id: arrow.id });
     const { name, tech, desc } = parseLabel(e.text);
-    bindText(arrow, [name, tech && `[${tech}]`, desc].filter(Boolean).join('\n'), LIGHT.fg, g.mid, 200);
+    bindText(arrow, [name, tech && `[${tech}]`, desc].filter(Boolean).join('\n'), LIGHT.fg, [g.mid[0] - 110, g.mid[1] - 40, 220, 80]);
   }
   return { type: 'excalidraw', version: 2, source: 'fasdraw', elements: els, appState: { viewBackgroundColor: '#ffffff', gridSize: 20 }, files: {} };
 }

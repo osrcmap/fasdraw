@@ -5,14 +5,16 @@ export type Kind = 'person' | 'system' | 'container' | 'component' | 'database' 
 export type Dash = 0 | 1 | 2; // solid, dashed, dotted
 export type Route = 'straight' | 'elbow' | 'curve';
 export type Head = 'end' | 'both' | 'none';
+export type Align = 'left' | 'center' | 'right';
 export type Pt = [number, number];
-export interface Node { id: string; kind: Kind; x: number; y: number; w: number; h: number; text: string; color?: string; dash?: Dash; ext?: boolean }
+export interface Node { id: string; kind: Kind; x: number; y: number; w: number; h: number; text: string; color?: string; dash?: Dash; ext?: boolean; align?: Align }
 export interface Edge { id: string; from: string; to: string; text: string; color?: string; dash: Dash; route: Route; head: Head }
 export interface Doc { nodes: Node[]; edges: Edge[] }
 export type EdgeStyle = Pick<Edge, 'dash' | 'route' | 'head'>;
 export type Measure = (s: string, size: number, bold?: boolean) => number;
-export interface PathPrim { d: string; fill?: string; stroke?: string; sw?: number; dash?: Dash }
-export interface TextPrim { text: string; x: number; y: number; size: number; bold?: boolean; color: string; anchor: 'middle' | 'start' }
+// `detail`: the decoration's size in world units; renderers may skip it when it would be under ~3 screen px.
+export interface PathPrim { d: string; fill?: string; stroke?: string; sw?: number; dash?: Dash; detail?: number }
+export interface TextPrim { text: string; x: number; y: number; size: number; bold?: boolean; color: string; anchor: 'start' | 'middle' | 'end' }
 export type Prim = PathPrim | TextPrim;
 export interface Theme { fg: string; muted: string; bg: string }
 
@@ -23,6 +25,7 @@ export const font = (size: number, bold?: boolean) => `${bold ? 600 : 400} ${siz
 export const DASH: number[][] = [[], [8, 5], [1.5, 4.5]];
 export const ROUTES: Route[] = ['straight', 'elbow', 'curve'];
 export const HEADS: Head[] = ['end', 'both', 'none'];
+export const ALIGNS: Align[] = ['left', 'center', 'right'];
 export const GRID = 10;
 export const PALETTE = ['#1168bd', '#08427b', '#438dd5', '#85bbf0', '#7d7d7d', '#2f9e44', '#f08c00', '#e03131', '#7048e8'];
 const EXTERNAL = '#7d7d7d';
@@ -49,6 +52,7 @@ export const center = (n: Node): Pt => [n.x + n.w / 2, n.y + n.h / 2];
 export const inRect = (n: Node, p: Pt, pad: number) => p[0] >= n.x - pad && p[0] <= n.x + n.w + pad && p[1] >= n.y - pad && p[1] <= n.y + n.h + pad;
 export const isFilled = (k: Kind) => !!KINDS[k].color;
 export const nodeDash = (n: Node): Dash => n.dash ?? (n.kind === 'boundary' ? 1 : 0);
+export const nodeAlign = (n: Node): Align => n.align ?? (n.kind === 'boundary' || n.kind === 'text' ? 'left' : 'center');
 export const nodeColor = (n: Node, t: Theme) => n.color ?? (n.ext && isFilled(n.kind) ? EXTERNAL : KINDS[n.kind].color ?? t.fg);
 
 export function makeNode(kind: Kind, cx: number, cy: number, text = ''): Node {
@@ -123,12 +127,21 @@ function nodeLines(n: Node, m: Measure): Line[] {
 // ---------- shapes ----------
 // Tagged template that rounds every interpolated number: compact, deterministic path strings.
 const P = (s: TemplateStringsArray, ...v: number[]) => s.reduce((a, b, i) => a + r1(v[i - 1]) + b);
+// Curves are cubic Béziers only (no SVG arcs), so one path syntax serves canvas, SVG and PDF.
+const K = 0.5523; // control-point ratio approximating a quarter ellipse
+// Quarter ellipse from a to b; `flat` = the tangent at a is horizontal.
+const qc = (ax: number, ay: number, bx: number, by: number, flat: boolean) => flat
+  ? P`C${ax + (bx - ax) * K} ${ay} ${bx} ${by + (ay - by) * K} ${bx} ${by}`
+  : P`C${ax} ${ay + (by - ay) * K} ${bx + (ax - bx) * K} ${by} ${bx} ${by}`;
 const rr = (x: number, y: number, w: number, h: number, r: number) => {
   r = Math.max(0, Math.min(r, w / 2, h / 2));
-  return P`M${x + r} ${y}H${x + w - r}A${r} ${r} 0 0 1 ${x + w} ${y + r}V${y + h - r}A${r} ${r} 0 0 1 ${x + w - r} ${y + h}H${x + r}A${r} ${r} 0 0 1 ${x} ${y + h - r}V${y + r}A${r} ${r} 0 0 1 ${x + r} ${y}Z`;
+  const R = x + w, B = y + h;
+  return P`M${x + r} ${y}H${R - r}` + qc(R - r, y, R, y + r, true) + P`V${B - r}` + qc(R, B - r, R - r, B, false)
+    + P`H${x + r}` + qc(x + r, B, x, B - r, true) + P`V${y + r}` + qc(x, y + r, x + r, y, false) + 'Z';
 };
 const ell = (cx: number, cy: number, rx: number, ry: number) =>
-  P`M${cx - rx} ${cy}A${rx} ${ry} 0 1 0 ${cx + rx} ${cy}A${rx} ${ry} 0 1 0 ${cx - rx} ${cy}Z`;
+  P`M${cx - rx} ${cy}` + qc(cx - rx, cy, cx, cy - ry, false) + qc(cx, cy - ry, cx + rx, cy, true)
+  + qc(cx + rx, cy, cx, cy + ry, false) + qc(cx, cy + ry, cx - rx, cy, true) + 'Z';
 export const headR = (n: Node) => Math.min(n.w, n.h) * 0.17; // person head radius
 export const cylR = (n: Node) => Math.min(16, n.h * 0.12); // database lid half-height
 export const tubeR = (n: Node) => Math.min(16, n.w * 0.1); // queue end half-width
@@ -159,20 +172,24 @@ export function nodePrims(n: Node, t: Theme, m: Measure): Prim[] {
     }
     case 'database': {
       const r = cylR(n);
-      shape(P`M${x} ${y + r}A${w / 2} ${r} 0 0 1 ${x + w} ${y + r}V${y + h - r}A${w / 2} ${r} 0 0 1 ${x} ${y + h - r}Z`);
-      line(P`M${x} ${y + r}A${w / 2} ${r} 0 0 0 ${x + w} ${y + r}`);
+      const cx = x + w / 2, R = x + w, B = y + h;
+      shape(P`M${x} ${y + r}` + qc(x, y + r, cx, y, false) + qc(cx, y, R, y + r, true) + P`V${B - r}`
+        + qc(R, B - r, cx, B, false) + qc(cx, B, x, B - r, true) + 'Z');
+      line(P`M${x} ${y + r}` + qc(x, y + r, cx, y + 2 * r, false) + qc(cx, y + 2 * r, R, y + r, true));
       break;
     }
     case 'queue': {
       const r = tubeR(n);
-      shape(P`M${x + r} ${y}H${x + w - r}A${r} ${h / 2} 0 0 1 ${x + w - r} ${y + h}H${x + r}A${r} ${h / 2} 0 0 1 ${x + r} ${y}Z`);
-      line(P`M${x + w - r} ${y}A${r} ${h / 2} 0 0 0 ${x + w - r} ${y + h}`);
+      const cy = y + h / 2, R = x + w, B = y + h;
+      shape(P`M${x + r} ${y}H${R - r}` + qc(R - r, y, R, cy, true) + qc(R, cy, R - r, B, false)
+        + P`H${x + r}` + qc(x + r, B, x, cy, true) + qc(x, cy, x + r, y, false) + 'Z');
+      line(P`M${R - r} ${y}` + qc(R - r, y, R - 2 * r, cy, true) + qc(R - 2 * r, cy, R - r, B, false));
       break;
     }
     case 'browser':
       shape(rr(x, y, w, h, 8));
       line(P`M${x} ${y + 22}H${x + w}`);
-      out.push({ d: ell(x + 12, y + 11, 3, 3) + ell(x + 22, y + 11, 3, 3) + ell(x + 32, y + 11, 3, 3), fill: stroke });
+      out.push({ d: ell(x + 12, y + 11, 3, 3) + ell(x + 22, y + 11, 3, 3) + ell(x + 32, y + 11, 3, 3), fill: stroke, detail: 6 });
       break;
     case 'ellipse': shape(ell(x + w / 2, y + h / 2, w / 2, h / 2)); break;
     case 'text': break;
@@ -180,12 +197,13 @@ export function nodePrims(n: Node, t: Theme, m: Measure): Prim[] {
   }
 
   const ls = nodeLines(n, m), [bx, by, bw, bh] = labelBox(n), th = textHeight(ls);
-  const left = n.kind === 'boundary' || n.kind === 'text';
+  const al = nodeAlign(n), pad = n.kind === 'text' ? 4 : 12, anchor = al === 'left' ? 'start' : al === 'right' ? 'end' : 'middle';
+  const tx = al === 'left' ? bx + pad : al === 'right' ? bx + bw - pad : bx + bw / 2;
   const tc = solid ? textOn(c) : n.kind === 'text' ? c : t.fg;
   let ty = n.kind === 'boundary' ? y + h - 10 - th : by + (bh - th) / 2;
   for (const l of ls) {
     ty += lh(l);
-    if (l.s) out.push({ text: l.s, x: left ? x + (n.kind === 'text' ? 4 : 12) : bx + bw / 2, y: ty - l.size * 0.36, size: l.size, bold: l.bold, color: l.muted ? (solid ? tc + 'bf' : t.muted) : tc, anchor: left ? 'start' : 'middle' });
+    if (l.s) out.push({ text: l.s, x: tx, y: ty - l.size * 0.36, size: l.size, bold: l.bold, color: l.muted ? (solid ? tc + 'bf' : t.muted) : tc, anchor });
   }
   return out;
 }
@@ -241,7 +259,28 @@ function along(pts: Pt[], t: number): Pt {
 }
 
 // pts: the polyline (curves sampled) used for arrowheads, hit testing and the label midpoint.
-export function edgeGeom(e: Edge, a: Node, b: Node) {
+// ---------- memo: unchanged nodes and edges reuse their geometry and display list across frames ----------
+// Keyed by object; a signature of every input decides whether the cached value is still valid.
+function memo<K extends object, V>() {
+  const cache = new WeakMap<K, { sig: string; v: V }>();
+  return (k: K, sig: string, make: () => V) => {
+    const hit = cache.get(k);
+    if (hit?.sig === sig) return hit.v;
+    const v = make();
+    cache.set(k, { sig, v });
+    return v;
+  };
+}
+const refs = new WeakMap<object, number>();
+let refCount = 0;
+const ref = (o: object) => refs.get(o) ?? (refs.set(o, ++refCount), refCount); // stable id for themes/measures
+const boxSig = (n: Node) => `${n.x},${n.y},${n.w},${n.h},${n.kind}`;
+const nodeSig = (n: Node) => `${boxSig(n)},${n.color},${n.dash},${n.ext},${n.align}\n${n.text}`;
+const geomMemo = memo<Edge, ReturnType<typeof geom>>(), nodeMemo = memo<Node, Prim[]>(), edgeMemo = memo<Edge, Prim[]>();
+
+export const edgeGeom = (e: Edge, a: Node, b: Node) => geomMemo(e, `${e.route}|${boxSig(a)}|${boxSig(b)}`, () => geom(e, a, b));
+
+function geom(e: Edge, a: Node, b: Node) {
   const [ax, ay] = center(a), [bx, by] = center(b), dx = bx - ax, dy = by - ay;
   let pts: Pt[], d: string;
   if (e.route === 'straight') {
@@ -274,13 +313,13 @@ function head(tip: Pt, from: Pt, s = 10): string {
 export function edgePrims(e: Edge, a: Node, b: Node, t: Theme, m: Measure): Prim[] {
   const g = edgeGeom(e, a, b), c = e.color ?? t.muted, n = g.pts.length;
   const out: Prim[] = [{ d: g.d, stroke: c, sw: 1.5, dash: e.dash }];
-  if (e.head !== 'none') out.push({ d: head(g.pts[n - 1], g.pts[n - 2]), fill: c, stroke: c, sw: 1 });
-  if (e.head === 'both') out.push({ d: head(g.pts[0], g.pts[1]), fill: c, stroke: c, sw: 1 });
+  if (e.head !== 'none') out.push({ d: head(g.pts[n - 1], g.pts[n - 2]), fill: c, stroke: c, sw: 1, detail: 10 });
+  if (e.head === 'both') out.push({ d: head(g.pts[0], g.pts[1]), fill: c, stroke: c, sw: 1, detail: 10 });
   if (e.text.trim()) {
     const { name, tech, desc } = parseLabel(e.text);
     const ls = stack(name, tech, desc, 200, m, 12, false);
     const w = Math.max(...ls.map(l => m(l.s, l.size, l.bold))) + 12, h = textHeight(ls) + 6;
-    out.push({ d: rr(g.mid[0] - w / 2, g.mid[1] - h / 2, w, h, 5), fill: t.bg });
+    out.push({ d: rr(g.mid[0] - w / 2, g.mid[1] - h / 2, w, h, 5), fill: t.bg, detail: 12 });
     let ty = g.mid[1] - h / 2 + 3;
     for (const l of ls) {
       ty += lh(l);
@@ -298,11 +337,12 @@ export function docPrims(doc: Doc, t: Theme, m: Measure, view?: [number, number,
     !view || (x0 < view[0] + view[2] && x1 > view[0] && y0 < view[1] + view[3] && y1 > view[1]);
   const out: Prim[] = [];
   for (const pass of [true, false])
-    for (const n of doc.nodes) if ((n.kind === 'boundary') === pass && vis(n.x, n.y, n.x + n.w, n.y + n.h)) out.push(...nodePrims(n, t, m));
+    for (const n of doc.nodes) if ((n.kind === 'boundary') === pass && vis(n.x, n.y, n.x + n.w, n.y + n.h))
+      out.push(...nodeMemo(n, `${ref(t)} ${ref(m)} ${nodeSig(n)}`, () => nodePrims(n, t, m)));
   for (const e of doc.edges) {
     const a = byId.get(e.from), b = byId.get(e.to);
     if (a && b && vis(Math.min(a.x, b.x) - 60, Math.min(a.y, b.y) - 60, Math.max(a.x + a.w, b.x + b.w) + 60, Math.max(a.y + a.h, b.y + b.h) + 60))
-      out.push(...edgePrims(e, a, b, t, m));
+      out.push(...edgeMemo(e, `${ref(t)} ${ref(m)} ${e.dash}${e.head}${e.color}|${boxSig(a)}|${boxSig(b)}|${e.route}\n${e.text}`, () => edgePrims(e, a, b, t, m)));
   }
   return out;
 }

@@ -97,7 +97,7 @@ test('structurizr DSL import: kinds, styles, nesting, layout', async () => {
       assert.ok(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, `${a.text} overlaps ${b.text}`);
 });
 
-test('structurizr DSL tolerates the syntax we do not model', async () => {
+test('structurizr DSL: hierarchical ids, unknown blocks, deployment', async () => {
   const { parseDsl } = await import('./dsl.ts');
   const d = parseDsl(`
     # comment
@@ -123,8 +123,12 @@ test('structurizr DSL tolerates the syntax we do not model', async () => {
         }
       }
     }`, m);
-  assert.deepEqual(d.nodes.map(n => n.kind), ['person', 'boundary', 'container', 'container']);
+  // model, then the Live environment > Box node > instance of A
+  assert.deepEqual(d.nodes.map(n => n.kind), ['person', 'boundary', 'container', 'container', 'boundary', 'boundary', 'container']);
   assert.equal(d.edges.length, 2);
+  assert.equal(d.nodes[4].text, 'Live [Deployment Environment]');
+  assert.equal(d.nodes[6].text, 'A');
+  assert.ok(d.nodes[4].y > Math.max(...d.nodes.slice(0, 4).map(n => n.y + n.h)), 'deployment sits below the model');
 });
 
 test('structurizr DSL export round-trips kinds and relationships', async () => {
@@ -138,5 +142,85 @@ test('structurizr DSL export round-trips kinds and relationships', async () => {
   assert.equal(back.edges.length, 2);
   assert.ok(back.edges.some(e => e.dash === 1 && e.route === 'elbow'));
   assert.ok(back.nodes.find(n => n.text.startsWith('DB'))!.ext);
-  assert.match(dsl, /diagram = softwareSystem "Diagram" \{[\s\S]*components = container "Components" \{\n\s+orphan = component "Orphan"/);
+  assert.match(dsl, /diagram = softwareSystem "Diagram" "" "fasdraw:generated" \{[\s\S]*components = container "Components" "" "" "fasdraw:generated" \{\n\s+orphan = component "Orphan"/);
+  assert.ok(!back.nodes.some(n => n.text.startsWith('Diagram')), 'generated wrappers are not drawn');
+  // positions survive the round trip
+  for (const n of d.nodes) {
+    const b = back.nodes.find(x => x.text.split('\n')[0] === n.text.split('\n')[0])!;
+    assert.deepEqual([b.x, b.y, b.w, b.h], [n.x, n.y, n.w, n.h], n.text);
+  }
+});
+
+test('structurizr DSL: deployment instances inherit relationships, and round-trip', async () => {
+  const { parseDsl, toDsl } = await import('./dsl.ts');
+  const d = parseDsl(`workspace {
+    model {
+      s = softwareSystem "Shop" {
+        api = container "API" "" "Go"
+        db = container "DB" "" "PostgreSQL" "Database"
+      }
+      api -> db "Reads" "SQL"
+      prod = deploymentEnvironment "Prod" {
+        aws = deploymentNode "AWS" "" "Cloud" {
+          ecs = deploymentNode "ECS" "" "Fargate" "" "3" {
+            apiOnEcs = containerInstance api
+          }
+          rds = deploymentNode "RDS" {
+            dbOnRds = containerInstance db
+          }
+          lb = infrastructureNode "Load balancer" "" "ALB"
+        }
+        lb -> apiOnEcs "Forwards to"
+      }
+    }
+  }`, m);
+  const by = (t: string) => d.nodes.find(n => n.text.startsWith(t))!;
+  assert.equal(by('ECS ×3').text, 'ECS ×3 [Deployment Node: Fargate]');
+  assert.equal(by('Load balancer').text, 'Load balancer [Infrastructure Node: ALB]');
+  const dbs = d.nodes.filter(n => n.kind === 'database');
+  assert.equal(dbs.length, 2, 'the instance looks like the database it deploys');
+  assert.equal(d.edges.length, 3, 'model edge, its implied instance edge, and the explicit deployment edge');
+  const back = parseDsl(toDsl(d), m);
+  assert.deepEqual(back.nodes.map(n => `${n.kind}:${n.text.split('\n')[0]}`).sort(), d.nodes.map(n => `${n.kind}:${n.text.split('\n')[0]}`).sort());
+  assert.equal(back.edges.length, 3);
+});
+
+test('structurizr DSL: !include resolves through the callback', async () => {
+  const { parseDsl } = await import('./dsl.ts');
+  const asked: string[] = [];
+  const files: Record<string, string> = { 'people.dsl': 'u = person "User"\n!include missing.dsl', 'rels.dsl': 'u -> s "Uses"' };
+  const d = parseDsl('workspace {\n model {\n  !include people.dsl\n  s = softwareSystem "Sys"\n  !include "rels.dsl"\n }\n}', m, p => { asked.push(p); return files[p]; });
+  assert.deepEqual(asked, ['people.dsl', 'missing.dsl', 'rels.dsl']);
+  assert.deepEqual(d.nodes.map(n => n.kind), ['person', 'system']);
+  assert.equal(d.edges.length, 1);
+});
+
+test('vector PDF draws shapes and text, and declines glyphs the base fonts lack', async () => {
+  const { vectorPdf } = await import('./io.ts');
+  const d = sample();
+  d.nodes[0].text = 'Señor (QA)';
+  const pdf = await vectorPdf(d);
+  assert.ok(pdf);
+  const bytes = new Uint8Array(await pdf.arrayBuffer()), s = Array.from(bytes, c => String.fromCharCode(c)).join(''); // 1 char per byte
+  const xref = Number(s.match(/startxref\n(\d+)/)![1]);
+  [...s.slice(xref).matchAll(/(\d{10}) 00000 n/g)].forEach((r, i) => assert.ok(s.startsWith(`${i + 1} 0 obj`, Number(r[1]))));
+  const start = s.indexOf('stream\n', s.indexOf('4 0 obj')) + 7, len = Number(s.match(/4 0 obj\n<< \/Length (\d+)/)![1]);
+  const raw = bytes.slice(start, start + len);
+  const content = await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate'))).text();
+  assert.match(content, /\(Se\\361or \\\(QA\\\)\) Tj/); // ñ in WinAnsi, parentheses escaped
+  assert.match(content, / c /); // curves came through as cubic Béziers
+  assert.ok(pdf.size < 8000, `vector PDF stays small (${pdf.size} B)`);
+  d.nodes[0].text = '数据库';
+  assert.equal(await vectorPdf(d), undefined);
+});
+
+test('text alignment moves the label anchor', async () => {
+  const { nodePrims, LIGHT } = await import('./model.ts');
+  const n = makeNode('container', 0, 0, 'API');
+  const anchorX = () => nodePrims(n, LIGHT, m).flatMap(p => ('text' in p ? [[p.anchor, p.x]] : []))[0];
+  assert.deepEqual(anchorX(), ['middle', n.x + n.w / 2]);
+  n.align = 'right';
+  assert.deepEqual(anchorX(), ['end', n.x + n.w - 12]);
+  n.align = 'left';
+  assert.deepEqual(anchorX(), ['start', n.x + 12]);
 });
