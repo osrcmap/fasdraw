@@ -344,7 +344,7 @@ export function toExcalidraw(doc: Doc, m: Measure) {
     const arrow = el('arrow', x0, y0, Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), {
       strokeColor: e.color ?? LIGHT.muted, strokeStyle: STROKE[e.dash], points: rel, lastCommittedPoint: null,
       startBinding: { elementId: ha.id, focus: 0, gap: 6 }, endBinding: { elementId: hb.id, focus: 0, gap: 6 },
-      startArrowhead: e.head === 'both' ? 'arrow' : null, endArrowhead: e.head === 'none' ? null : 'arrow',
+      startArrowhead: e.head === 'start' || e.head === 'both' ? 'arrow' : null, endArrowhead: e.head === 'end' || e.head === 'both' ? 'arrow' : null,
       roundness: e.route === 'curve' ? { type: 2 } : null, elbowed: false,
     });
     ha.boundElements.push({ type: 'arrow', id: arrow.id });

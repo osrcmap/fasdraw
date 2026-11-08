@@ -60,7 +60,7 @@ Hover the canvas and type. Typing `p` *Customer* `Tab` *Web App [React]* `Tab` *
 | `H` `J` `K` `L` · `Tab` | grow a new connected node ← ↓ ↑ →. `Tab` repeats the last direction, even while typing |
 | `h` `j` `k` `l` | jump to the nearest node in that direction |
 | `1`–`9` · `0` | color · back to the C4 default |
-| `-` · `e` · `a` | solid/dashed/dotted · straight/elbow/curved · arrowheads. The last style sticks for new lines |
+| `-` · `e` · `a` | solid/dashed/dotted · straight/elbow/curved · arrowheads → ← ↔ none. The last style sticks for new lines |
 | `f` | text alignment: left → center → right |
 | `x` | mark as external (C4 gray) |
 | `>` | connect the selected nodes in the order you picked them |

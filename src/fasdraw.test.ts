@@ -224,3 +224,19 @@ test('text alignment moves the label anchor', async () => {
   n.align = 'left';
   assert.deepEqual(anchorX(), ['start', n.x + 12]);
 });
+
+test('arrowheads: end, start, both or none', async () => {
+  const { edgeGeom, edgePrims, LIGHT } = await import('./model.ts');
+  const { parseDsl, toDsl } = await import('./dsl.ts');
+  const d = sample(), e = d.edges[0], [a, b] = d.nodes, g = edgeGeom(e, a, b);
+  const tips = () => edgePrims(e, a, b, LIGHT, m).flatMap(p => ('d' in p && p.detail === 10 ? [p.d.match(/^M([\d.-]+) ([\d.-]+)/)!.slice(1).map(Number)] : []));
+  const at = (q: number[]) => q.map(v => Math.round(v));
+  e.head = 'end'; assert.deepEqual(tips().map(at), [at(g.pts[g.pts.length - 1])]);
+  e.head = 'start'; assert.deepEqual(tips().map(at), [at(g.pts[0])]);
+  e.head = 'both'; assert.equal(tips().length, 2);
+  e.head = 'none'; assert.equal(tips().length, 0);
+  // a "start" arrow is the relationship pointing the other way
+  e.head = 'start';
+  const back = parseDsl(toDsl(d), m), nameOf = (id: string) => back.nodes.find(n => n.id === id)!.text.split('\n')[0];
+  assert.ok(back.edges.some(x => nameOf(x.from) === 'API [Go]' && nameOf(x.to) === 'User'));
+});

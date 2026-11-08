@@ -4,7 +4,7 @@
 export type Kind = 'person' | 'system' | 'container' | 'component' | 'database' | 'queue' | 'browser' | 'boundary' | 'rect' | 'ellipse' | 'text';
 export type Dash = 0 | 1 | 2; // solid, dashed, dotted
 export type Route = 'straight' | 'elbow' | 'curve';
-export type Head = 'end' | 'both' | 'none';
+export type Head = 'end' | 'start' | 'both' | 'none'; // which ends get an arrowhead: to, from, both, neither
 export type Align = 'left' | 'center' | 'right';
 export type Pt = [number, number];
 export interface Node { id: string; kind: Kind; x: number; y: number; w: number; h: number; text: string; color?: string; dash?: Dash; ext?: boolean; align?: Align }
@@ -24,7 +24,7 @@ export const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 export const font = (size: number, bold?: boolean) => `${bold ? 600 : 400} ${size}px ${FONT}`;
 export const DASH: number[][] = [[], [8, 5], [1.5, 4.5]];
 export const ROUTES: Route[] = ['straight', 'elbow', 'curve'];
-export const HEADS: Head[] = ['end', 'both', 'none'];
+export const HEADS: Head[] = ['end', 'start', 'both', 'none'];
 export const ALIGNS: Align[] = ['left', 'center', 'right'];
 export const GRID = 10;
 export const PALETTE = ['#1168bd', '#08427b', '#438dd5', '#85bbf0', '#7d7d7d', '#2f9e44', '#f08c00', '#e03131', '#7048e8'];
@@ -313,8 +313,8 @@ function head(tip: Pt, from: Pt, s = 10): string {
 export function edgePrims(e: Edge, a: Node, b: Node, t: Theme, m: Measure): Prim[] {
   const g = edgeGeom(e, a, b), c = e.color ?? t.muted, n = g.pts.length;
   const out: Prim[] = [{ d: g.d, stroke: c, sw: 1.5, dash: e.dash }];
-  if (e.head !== 'none') out.push({ d: head(g.pts[n - 1], g.pts[n - 2]), fill: c, stroke: c, sw: 1, detail: 10 });
-  if (e.head === 'both') out.push({ d: head(g.pts[0], g.pts[1]), fill: c, stroke: c, sw: 1, detail: 10 });
+  if (e.head === 'end' || e.head === 'both') out.push({ d: head(g.pts[n - 1], g.pts[n - 2]), fill: c, stroke: c, sw: 1, detail: 10 });
+  if (e.head === 'start' || e.head === 'both') out.push({ d: head(g.pts[0], g.pts[1]), fill: c, stroke: c, sw: 1, detail: 10 });
   if (e.text.trim()) {
     const { name, tech, desc } = parseLabel(e.text);
     const ls = stack(name, tech, desc, 200, m, 12, false);

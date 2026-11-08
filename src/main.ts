@@ -152,11 +152,11 @@ function overlay() {
 const shown = new WeakMap<HTMLElement, string>();
 function setHTML(el: HTMLElement, html: string) { if (shown.get(el) !== html) { shown.set(el, html); el.innerHTML = html; } }
 const DASH_NAMES = ['solid', 'dashed', 'dotted'];
-const HEAD_GLYPH: Record<Head, string> = { end: '→', both: '↔', none: '—' };
+const HEAD_GLYPH: Record<Head, string> = { end: '→', start: '←', both: '↔', none: '—' };
 const icon = (d: string, extra = '') => `<svg viewBox="0 0 28 12"><path d="${d}"${extra}/></svg>`;
 const ROUTE_D: Record<Route, string> = { straight: 'M3 10L25 2', elbow: 'M3 10H14V2H25', curve: 'M3 10C15 10 13 2 25 2' };
 const ALIGN_D: Record<Align, string> = { left: 'M3 2H25M3 6H17M3 10H21', center: 'M3 2H25M8 6H20M5 10H23', right: 'M3 2H25M11 6H25M7 10H25' };
-const HEAD_D: Record<Head, string> = { end: 'M3 6H24M19 2L24 6L19 10', both: 'M4 6H24M9 2L4 6L9 10M19 2L24 6L19 10', none: 'M3 6H25' };
+const HEAD_D: Record<Head, string> = { end: 'M3 6H24M19 2L24 6L19 10', start: 'M4 6H25M9 2L4 6L9 10', both: 'M4 6H24M9 2L4 6L9 10M19 2L24 6L19 10', none: 'M3 6H25' };
 
 function ui() {
   $('#empty').hidden = doc.nodes.length > 0;
@@ -513,7 +513,7 @@ bind('1 2 3 4 5 6 7 8 9', 'Color', k => setColor(+k), '1–9');
 bind('0', 'Default color for the kind', () => setColor(0));
 bind('-', 'Stroke: solid → dashed → dotted', () => setDash());
 bind('e', 'Route: straight → elbow → curve', () => setRoute());
-bind('a', 'Arrows: end → both → none', () => setHead());
+bind('a', 'Arrowheads: → ← ↔ none', () => setHead());
 bind('f', 'Text: left → center → right', () => setAlign());
 bind('x', 'Toggle external (C4 gray)', toggleExt);
 section('Edit & view');

@@ -401,7 +401,9 @@ export function toDsl(doc: Doc): string {
 
   const byId = new Map(doc.nodes.map(n => [n.id, n])), rels = new Set<string>(), relTags = new Set<string>();
   for (const e of doc.edges) {
-    const na = byId.get(e.from)!, nb = byId.get(e.to)!, a = ids.get(na), b = ids.get(nb), { name, tech } = parseLabel(e.text);
+    // DSL relationships are directional: an arrow drawn pointing back at its first node is a relationship the other way.
+    const [na, nb] = e.head === 'start' ? [byId.get(e.to)!, byId.get(e.from)!] : [byId.get(e.from)!, byId.get(e.to)!];
+    const a = ids.get(na), b = ids.get(nb), { name, tech } = parseLabel(e.text);
     const ra = instanceOf.get(na), rb = instanceOf.get(nb);
     if (ra && rb && doc.edges.some(x => x.from === ra.id && x.to === rb.id)) continue; // implied by the model
     if (!a || !b || rels.has(`${a}>${b}>${name}`)) continue; // Structurizr rejects duplicate relationships
